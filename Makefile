@@ -13,26 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-SHELL := /bin/bash
-.SHELLFLAGS = -o pipefail -c
+SHELL := /bin/bash -o pipefail -c
+
+include ./make/help.mk
+include ./make/platform.mk
 
 OUTPUT_DIR := _output/local/bin
+BINARY_NAMES := $(subst cmd/,,$(wildcard cmd/*))
 
 ROOT_PKG := $(shell go list -m)
 ALL_PKGS := $(shell go list ./... | grep -v hack)
-UNIT_TEST_PKGS := $(shell go list ./... | grep -Ev 'github.com/mesosphere/protoss/(test/)?e2e')
-ALL_SRC_FILES := $(shell find . ! -path '*/vendor/*' -name '*.go')
-NON_GENERATED_SRC_FILES := $(shell find . ! -path '*/vendor/*' ! -path '*/pkg/client/*' -name '*.go' | grep -v generated)
+UNIT_TEST_PKGS := $(shell go list ./... | grep -Ev '$(ROOT_PKG)/(test/)?e2e')
+ALL_SRC_FILES := $(shell find . ! -path '*/.git/*' -name '*.go')
+NON_GENERATED_SRC_FILES := $(shell find . -name '*.go' | grep -v generated)
 export GOPATH := $(shell go env GOPATH)
 
-GOOS ?= $(shell go env GOOS)
-GOARCH ?= $(shell go env GOARCH)
 # Use the native vendor/ dependency system
 export GO111MODULE := on
 export CGO_ENABLED := 0
 
-DOCKER_IMAGE_PREFIX ?= mesosphere/
 DOCKER_IMAGE_TAG ?= latest
+DOCKERFILE_DEV_SHA := $(shell $(SHA1) Dockerfile.dev | awk '{ print $$1 }')
 
 GIT_COMMIT := $(shell git rev-parse "HEAD^{commit}")
 ifneq ($(shell git status --porcelain 2>/dev/null; echo $$?), 0)
@@ -54,51 +55,66 @@ LDFLAGS := -s -w -extldflags '-static'
 include ./make/build.mk
 
 .PHONY: all
-all: format test vet
+all: test binaries
 
-.PHONY: format
-format: .goimports
+## run the unit tests
+.PHONY: test
+test: .bin/go-junit-report
+	@CGO_ENABLED=1 go test --race -v $(UNIT_TEST_PKGS) | tee >(.bin/go-junit-report > unit-test-report.xml)
 
-.goimports: .bin/goimports $(NON_GENERATED_SRC_FILES)
-	@echo "Running goimports"
-	@.bin/goimports -local $(ROOT_PKG) -w $(NON_GENERATED_SRC_FILES)
+## generate test coverage report in ./coverage.zip
+.PHONY: test.coverage
+test.coverage:
+	@CGO_ENABLED=1 go test -cover -coverprofile=coverage.out $(UNIT_TEST_PKGS)
+	@export COVERTMP=$$(mktemp -d) && \
+		go tool cover -html=coverage.out -o $${COVERTMP}/index.html && \
+		cd $${COVERTMP} && \
+		zip $(CURDIR)/coverage.zip * && \
+		cd $(CURDIR) && \
+		rm -rf $${COVERTMP}
+
+.bin/go-junit-report:
+	@GO111MODULE=off GOPATH=/tmp go get -u github.com/jstemmer/go-junit-report
+	@mkdir -p $(dir $@)
+	@cp /tmp/bin/go-junit-report $@
+
+PHONY: binaries
+binaries: $(addprefix $(OUTPUT_DIR)/linux/amd64/,$(BINARY_NAMES))
+
+$(OUTPUT_DIR)/linux/amd64/%: \
+								$(ALL_SRC_FILES) \
+								$(if $(value RUN_UPX),$(UPX_BINARY))
+	$(call build_binary,$@,$(ROOT_PKG)/cmd/$(notdir $@))
+
+.PHONY: docker.dev
+docker.dev: docker.build.dev
+	$(call run_docker_dev,$(WHAT))
+
+.PHONY: docker.build.dev
+docker.build.dev: .docker.build.dev.$(DOCKERFILE_DEV_SHA)
+
+.docker.build.dev.$(DOCKERFILE_DEV_SHA): Dockerfile.dev
+	@$(RM) .docker.build.dev.*
+	@docker build \
+			--build-arg=OS_PLATFORM=$(PLATFORM) \
+			$(if $(filter-out darwin,$(PLATFORM)),--build-arg=DOCKER_GID=$(shell getent group docker 2> /dev/null | cut -d: -f3)) \
+			-t mesosphere/tf-kubernetes-configmap-backend-dev:$(DOCKERFILE_DEV_SHA) \
+			-f Dockerfile.dev .
 	@touch $@
 
-.bin/goimports:
-	@GO111MODULE=off GOPATH=/tmp go get -u golang.org/x/tools/cmd/goimports
-	@mkdir -p $(dir $@)
-	@cp /tmp/bin/goimports $@
+## build all docker images
+.PHONY: docker.build
+docker.build: $(addprefix docker.build.,$(BINARY_NAMES))
 
-out/configmap-reload: out/configmap-reload-$(GOOS)-$(GOARCH)
-	cp $(BUILD_DIR)/configmap-reload-$(GOOS)-$(GOARCH) $(BUILD_DIR)/configmap-reload
+.PHONY: docker.build.%
+docker.build.%: .docker.build.%.$(GIT_VERSION)
+	@printf ''
 
-out/configmap-reload-linux-ppc64le: $(SRCFILES)
-	GOARCH=ppc64le GOOS=linux go build --installsuffix cgo -ldflags="$(LDFLAGS)" -a -o $(BUILD_DIR)/configmap-reload-linux-ppc64le configmap-reload.go
-
-out/configmap-reload-darwin-amd64: $(SRCFILES)
-	GOARCH=amd64 GOOS=darwin go build --installsuffix cgo -ldflags="$(LDFLAGS)" -a -o $(BUILD_DIR)/configmap-reload-darwin-amd64 configmap-reload.go
-
-out/configmap-reload-linux-amd64: $(SRCFILES)
-	GOARCH=amd64 GOOS=linux go build --installsuffix cgo -ldflags="$(LDFLAGS)" -a -o $(BUILD_DIR)/configmap-reload-linux-amd64 configmap-reload.go
-
-out/configmap-reload-windows-amd64.exe: $(SRCFILES)
-	GOARCH=amd64 GOOS=windows go build --installsuffix cgo -ldflags="$(LDFLAGS)" -a -o $(BUILD_DIR)/configmap-reload-windows-amd64.exe configmap-reload.go
-
-.PHONY: cross
-cross: out/configmap-reload-linux-amd64 out/configmap-reload-darwin-amd64 out/configmap-reload-windows-amd64.exe
-
-.PHONY: checksum
-checksum:
-	for f in out/configmap-reload-linux-amd64 out/configmap-reload-darwin-amd64 out/configmap-reload-windows-amd64.exe ; do \
-		if [ -f "$${f}" ]; then \
-			openssl sha256 "$${f}" | awk '{print $$2}' > "$${f}.sha256" ; \
-		fi ; \
-	done
-
-.PHONY: clean
-clean:
-	rm -rf $(BUILD_DIR)
-
-.PHONY: docker
-docker: out/configmap-reload Dockerfile
-	docker build -t $(DOCKER_IMAGE_NAME):$(DOCKER_IMAGE_TAG) .
+.PRECIOUS: .docker.build.%.$(GIT_VERSION)
+.docker.build.%.$(GIT_VERSION): Dockerfile.go-binary $(ALL_SRC_FILES) $(OUTPUT_DIR)/linux/amd64/%
+	@echo Building Docker image: mesosphere/$*:$(GIT_VERSION)
+	@$(RM) $(subst $(GIT_VERSION),*,$@)
+	@sed 's/$${BINARY_NAME}/$*/g' Dockerfile.go-binary | docker build \
+		-t mesosphere/$*:$(GIT_VERSION) \
+		-f - .
+	@touch $@

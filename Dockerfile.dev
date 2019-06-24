@@ -1,0 +1,19 @@
+FROM golang:1.12.6
+
+LABEL name=tf-kubernetes-configmap-backend-dev
+
+# whois is needed for mkpasswd...
+RUN apt-get update && \
+    apt-get install -y whois zip
+
+ENV HOME=/tmp
+
+ENV DOCKER_VERSION 18.09.3
+RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz | \
+    tar xz -C /usr/bin --strip-components=1 docker/docker
+
+ARG OS_PLATFORM
+ARG DOCKER_GID
+RUN if [ "$OS_PLATFORM" = "darwin" ] ; then groupadd -r docker; else groupadd docker -g ${DOCKER_GID}; fi
+
+ENV INCONTAINER=yes

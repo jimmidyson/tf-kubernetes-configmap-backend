@@ -1,0 +1,11 @@
+linters:
+  disable-all: true
+  enable:
+    - goimports
+    - gofmt
+    - golint
+    - govet
+
+linters-settings:
+  goimports:
+    local-prefixes: github.com/mesosphere/tf-kubernetes-configmap-backend

@@ -1,0 +1,8 @@
+.goimports
+coverage.out
+coverage.zip
+unit-test-report.html
+unit-test-report.xml
+.bin
+_output
+.docker.*
