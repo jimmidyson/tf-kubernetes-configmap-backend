@@ -7,3 +7,4 @@ unit-test-report.xml
 _output
 .docker.*
 .idea
+/tf-kubernetes-configmap-backend

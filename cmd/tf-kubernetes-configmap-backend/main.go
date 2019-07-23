@@ -17,16 +17,15 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
+	"time"
 
 	flag "github.com/spf13/pflag"
+	"k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/options"
 
 	tfhttp "github.com/jimmidyson/tf-kubernetes-configmap-backend/pkg/http"
@@ -35,20 +34,24 @@ import (
 )
 
 var (
-	bindAddress net.IP
-	bindPort    uint16
-
 	kubeconfig                      string
 	delegatingAuthenticationOptions = options.NewDelegatingAuthenticationOptions()
 	delegatingAuthorizationOptions  = options.NewDelegatingAuthorizationOptions()
+	secureServingOptions            = &options.SecureServingOptions{
+		BindAddress: net.ParseIP("0.0.0.0"),
+		BindPort:    8443,
+		Required:    true,
+		ServerCert: options.GeneratableKeyCert{
+			PairName:      "tf-kubernetes-configmap-backend",
+			CertDirectory: "tf-kubernetes-configmap-backend/certificates",
+		},
+	}
 )
 
 func main() {
-	flag.IPVar(&bindAddress, "bind-address", nil, "The IP address on which to listen for the --bind-port port. If blank, all interfaces will be used (0.0.0.0 for all IPv4 interfaces and :: for all IPv6 interfaces).")
-	flag.Uint16Var(&bindPort, "bind-port", 8443, "The port on which to serve HTTPS.")
-
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig file with authorization and master location information.")
 
+	secureServingOptions.AddFlags(flag.CommandLine)
 	delegatingAuthenticationOptions.AddFlags(flag.CommandLine)
 	delegatingAuthorizationOptions.AddFlags(flag.CommandLine)
 
@@ -76,35 +79,31 @@ func main() {
 		log.Fatalf("failed to create core client: %v", err)
 	}
 
-	actualBindAddress := ""
-	if bindAddress != nil {
-		actualBindAddress = bindAddress.String()
+	if err := secureServingOptions.MaybeDefaultWithSelfSignedCerts("localhost", nil, []net.IP{net.ParseIP("127.0.0.1")}); err != nil {
+		log.Fatalf("error creating self-signed certificates: %v", err)
+	}
+	var secureServingInfo *server.SecureServingInfo
+	if err := secureServingOptions.ApplyTo(&secureServingInfo); err != nil {
+		log.Fatalf("failed to initialize secure serving options: %v", err)
 	}
 
-	addr := net.JoinHostPort(actualBindAddress, strconv.Itoa(int(bindPort)))
-	srv := http.Server{
-		Addr:    addr,
-		Handler: tfhttp.NewHandler(coreClient, authenticationClient, authorizationClient),
+	internalStopCh := make(chan struct{})
+	stoppedCh, err := secureServingInfo.Serve(
+		tfhttp.NewHandler(coreClient, authenticationClient, authorizationClient),
+		time.Duration(60)*time.Second,
+		internalStopCh,
+	)
+	if err != nil {
+		close(internalStopCh)
+		log.Fatalf("failed to start serving: %v", err)
 	}
-	idleConnsClosed := make(chan struct{})
+
 	go func() {
 		sigint := make(chan os.Signal, 1)
 		signal.Notify(sigint, os.Interrupt)
 		<-sigint
-
-		// We received an interrupt signal, shut down.
-		if err := srv.Shutdown(context.Background()); err != nil {
-			// Error from closing listeners, or context timeout:
-			log.Printf("HTTP server Shutdown: %v", err)
-		}
-		close(idleConnsClosed)
+		close(internalStopCh)
 	}()
 
-	log.Printf("Listening on %s", addr)
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		// Error starting or closing listener:
-		log.Printf("HTTP server ListenAndServe: %v", err)
-	}
-
-	<-idleConnsClosed
+	<-stoppedCh
 }
