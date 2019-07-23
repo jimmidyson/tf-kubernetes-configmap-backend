@@ -9,7 +9,7 @@ define build_binary
 		GOARCH=$(shell basename $$(dirname $(1))) \
 		GOROOT_FINAL=/go \
 		&& \
-		go build \
+		go build -v \
 			-ldflags " \
 				-s -w \
 				-extldflags \"-static\" \

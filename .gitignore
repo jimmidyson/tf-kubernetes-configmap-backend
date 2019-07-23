@@ -6,3 +6,4 @@ unit-test-report.xml
 .bin
 _output
 .docker.*
+.idea

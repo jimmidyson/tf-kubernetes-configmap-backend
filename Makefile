@@ -21,16 +21,17 @@ include ./make/platform.mk
 OUTPUT_DIR := _output/local/bin
 BINARY_NAMES := $(subst cmd/,,$(wildcard cmd/*))
 
-ROOT_PKG := $(shell go list -m)
-ALL_PKGS := $(shell go list ./... | grep -v hack)
-UNIT_TEST_PKGS := $(shell go list ./... | grep -Ev '$(ROOT_PKG)/(test/)?e2e')
-ALL_SRC_FILES := $(shell find . ! -path '*/.git/*' -name '*.go')
-NON_GENERATED_SRC_FILES := $(shell find . -name '*.go' | grep -v generated)
 export GOPATH := $(shell go env GOPATH)
 
 # Use the native vendor/ dependency system
 export GO111MODULE := on
 export CGO_ENABLED := 0
+
+ROOT_PKG := $(shell GO111MODULE=on go list -m)
+ALL_PKGS := $(shell go list ./... | grep -v hack)
+UNIT_TEST_PKGS := $(shell go list ./... | grep -Ev '$(ROOT_PKG)/(test/)?e2e')
+ALL_SRC_FILES := $(shell find . ! -path '*/.git/*' -name '*.go')
+NON_GENERATED_SRC_FILES := $(shell find . -name '*.go' | grep -v generated)
 
 DOCKER_IMAGE_TAG ?= latest
 DOCKERFILE_DEV_SHA := $(shell $(SHA1) Dockerfile.dev | awk '{ print $$1 }')
@@ -40,7 +41,7 @@ ifneq ($(shell git status --porcelain 2>/dev/null; echo $$?), 0)
 	GIT_TREE_STATE := dirty
 endif
 
-GIT_TAG := $(shell git describe --tags --abbrev=7 "$(GIT_COMMIT)^{commit}" --exact-tags 2>/dev/null)
+GIT_TAG := $(shell git describe --tags --abbrev=7 "$(GIT_COMMIT)^{commit}" --exact-match 2>/dev/null)
 ifeq ($(GIT_TAG),)
 	GIT_VERSION := $(shell git describe --tags --abbrev=7 --always --dirty)
 else
