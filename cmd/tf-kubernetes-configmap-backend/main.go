@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Mesosphere, Inc.
+ * Copyright 2019 Jimmi Dyson
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,9 +29,9 @@ import (
 	flag "github.com/spf13/pflag"
 	"k8s.io/apiserver/pkg/server/options"
 
-	tfhttp "github.com/mesosphere/tf-kubernetes-configmap-backend/pkg/http"
-	"github.com/mesosphere/tf-kubernetes-configmap-backend/pkg/kubernetes"
-	"github.com/mesosphere/tf-kubernetes-configmap-backend/pkg/version"
+	tfhttp "github.com/jimmidyson/tf-kubernetes-configmap-backend/pkg/http"
+	"github.com/jimmidyson/tf-kubernetes-configmap-backend/pkg/kubernetes"
+	"github.com/jimmidyson/tf-kubernetes-configmap-backend/pkg/version"
 )
 
 var (
