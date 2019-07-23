@@ -1,4 +1,4 @@
-FROM golang:1.12.6
+FROM golang:1.12.7
 
 LABEL name=tf-kubernetes-configmap-backend-dev
 
@@ -8,7 +8,7 @@ RUN apt-get update && \
 
 ENV HOME=/tmp
 
-ENV DOCKER_VERSION 18.09.3
+ENV DOCKER_VERSION 19.03.0
 RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz | \
     tar xz -C /usr/bin --strip-components=1 docker/docker
 
