@@ -68,13 +68,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	generatedContents := `terraform {
-  backend "http" {
-    address = "` + remoteAddress.String() + `"
-    password = "` + strings.TrimSpace(string(serviceAccountToken)) + `"
-    skip_cert_verification = "true"
-  }
-}`
+	generatedContents := `address = "` + remoteAddress.String() + `"
+username = "terraform" # Value is unused, only password (token) is used for authentication
+password = "` + strings.TrimSpace(string(serviceAccountToken)) + `"
+skip_cert_verification = "true"
+`
 
 	if err := ioutil.WriteFile(outputFilePath, []byte(generatedContents), os.FileMode(0444)); err != nil {
 		fmt.Printf("Failed to write generated file: %v\n", err)
