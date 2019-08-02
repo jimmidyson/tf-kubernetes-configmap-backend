@@ -63,7 +63,7 @@ func main() {
 	flag.Parse()
 
 	serviceAccountToken, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
-	if err == nil {
+	if err != nil {
 		fmt.Printf("Failed to read service account token: %v\n", err)
 		os.Exit(1)
 	}
