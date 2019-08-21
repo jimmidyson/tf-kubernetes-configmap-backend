@@ -46,6 +46,7 @@ var (
 			CertDirectory: "tf-kubernetes-configmap-backend/certificates",
 		},
 	}
+	compressState bool
 )
 
 func main() {
@@ -54,6 +55,8 @@ func main() {
 	secureServingOptions.AddFlags(flag.CommandLine)
 	delegatingAuthenticationOptions.AddFlags(flag.CommandLine)
 	delegatingAuthorizationOptions.AddFlags(flag.CommandLine)
+
+	flag.BoolVar(&compressState, "compress-state", false, "Enable compression of the stored Terraform state")
 
 	versionFlag := flag.Bool("version", false, "Print version information and quit")
 
@@ -89,7 +92,7 @@ func main() {
 
 	internalStopCh := make(chan struct{})
 	stoppedCh, err := secureServingInfo.Serve(
-		tfhttp.NewHandler(coreClient, authenticationClient, authorizationClient),
+		tfhttp.NewHandler(coreClient, authenticationClient, authorizationClient, compressState),
 		time.Duration(60)*time.Second,
 		internalStopCh,
 	)

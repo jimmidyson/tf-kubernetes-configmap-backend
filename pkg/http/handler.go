@@ -17,8 +17,10 @@
 package http
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -42,17 +44,20 @@ type handler struct {
 	coreClient           corev1.CoreV1Interface
 	authenticationClient authenticationv1.TokenReviewInterface
 	authorizationClient  authorizationv1.SubjectAccessReviewInterface
+	compressState        bool
 }
 
 func NewHandler(
 	coreClient corev1.CoreV1Interface,
 	authenticationClient authenticationv1.TokenReviewInterface,
 	authorizationClient authorizationv1.SubjectAccessReviewInterface,
+	compressState bool,
 ) http.Handler {
 	return &handler{
 		coreClient:           coreClient,
 		authenticationClient: authenticationClient,
 		authorizationClient:  authorizationClient,
+		compressState:        compressState,
 	}
 }
 
@@ -148,7 +153,30 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	switch req.Method {
 	case http.MethodGet:
-		w.Write([]byte(configMap.Data["tfstate"]))
+		if state, ok := configMap.BinaryData["tfstate"]; ok {
+			var r io.Reader = bytes.NewReader(state)
+			if h.compressState {
+				var err error
+				r, err = gzip.NewReader(r)
+				if err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					fmt.Fprintf(w, "failed to read compressed Terraform state: %s", err)
+					return
+				}
+			}
+			if _, err := io.Copy(w, r); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintf(w, "failed to return Terraform state: %s", err)
+				return
+			}
+			if rc, ok := r.(io.Closer); ok {
+				if err := rc.Close(); err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					fmt.Fprintf(w, "failed to return Terraform state: %s", err)
+					return
+				}
+			}
+		}
 		return
 	case http.MethodPost:
 		if exists {
@@ -167,17 +195,17 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		reqTFState, err := ioutil.ReadAll(req.Body)
+		reqTFState, err := h.getTFStateForWriting(req.Body)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintf(w, "failed to read request body: %s", err)
 			return
 		}
 
-		if configMap.Data == nil {
-			configMap.Data = make(map[string]string, 1)
+		if configMap.BinaryData == nil {
+			configMap.BinaryData = make(map[string][]byte, 1)
 		}
-		configMap.Data["tfstate"] = string(reqTFState)
+		configMap.BinaryData["tfstate"] = reqTFState
 
 		switch apiVerb {
 		case "update":
@@ -231,4 +259,21 @@ func (h *handler) checkAccess(apiVerb, namespace, configMapName string, userInfo
 	}
 
 	return nil
+}
+
+func (h *handler) getTFStateForWriting(r io.Reader) ([]byte, error) {
+	var buf bytes.Buffer
+	w := io.Writer(&buf)
+	if h.compressState {
+		w = gzip.NewWriter(w)
+	}
+	if _, err := io.Copy(w, r); err != nil {
+		return nil, err
+	}
+	if wc, ok := w.(io.Closer); ok {
+		if err := wc.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return buf.Bytes(), nil
 }
