@@ -265,7 +265,11 @@ func (h *handler) getTFStateForWriting(r io.Reader) ([]byte, error) {
 	var buf bytes.Buffer
 	w := io.Writer(&buf)
 	if h.compressState {
-		w = gzip.NewWriter(w)
+		gzw, err := gzip.NewWriterLevel(w, gzip.BestCompression)
+		if err != nil {
+			return nil, err
+		}
+		w = gzw
 	}
 	if _, err := io.Copy(w, r); err != nil {
 		return nil, err
