@@ -3,10 +3,10 @@ module github.com/jimmidyson/tf-kubernetes-configmap-backend
 go 1.12
 
 require (
-	github.com/spf13/pflag v1.0.4-0.20181223182923-24fa6976df40
-	k8s.io/api v0.0.0-20190718183219-b59d8169aab5
-	k8s.io/apimachinery v0.0.0-20190612205821-1799e75a0719
-	k8s.io/apiserver v0.0.0-20190718184206-a1aa83af71a7
-	k8s.io/client-go v0.0.0-20190718183610-8e956561bbf5
-	k8s.io/klog v0.3.1
+	github.com/spf13/pflag v1.0.3
+	github.com/tdewolff/minify/v2 v2.5.1
+	k8s.io/api v0.0.0-20190819141258-3544db3b9e44
+	k8s.io/apimachinery v0.0.0-20190817020851-f2f3a405f61d
+	k8s.io/apiserver v0.0.0-20190819142446-92cc630367d0
+	k8s.io/client-go v0.0.0-20190819141724-e14f31a72a77
 )

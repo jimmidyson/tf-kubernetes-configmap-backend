@@ -47,6 +47,7 @@ var (
 		},
 	}
 	compressState bool
+	minifyState   bool
 )
 
 func main() {
@@ -57,6 +58,7 @@ func main() {
 	delegatingAuthorizationOptions.AddFlags(flag.CommandLine)
 
 	flag.BoolVar(&compressState, "compress-state", false, "Enable compression of the stored Terraform state")
+	flag.BoolVar(&minifyState, "minify-state", false, "Enable minification of stored Terraform state")
 
 	versionFlag := flag.Bool("version", false, "Print version information and quit")
 
@@ -92,7 +94,7 @@ func main() {
 
 	internalStopCh := make(chan struct{})
 	stoppedCh, err := secureServingInfo.Serve(
-		tfhttp.NewHandler(coreClient, authenticationClient, authorizationClient, compressState),
+		tfhttp.NewHandler(coreClient, authenticationClient, authorizationClient, compressState, minifyState),
 		time.Duration(60)*time.Second,
 		internalStopCh,
 	)

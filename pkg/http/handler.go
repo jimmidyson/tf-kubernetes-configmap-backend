@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/tdewolff/minify/v2/json"
 	authenticationapi "k8s.io/api/authentication/v1"
 	authorizationapi "k8s.io/api/authorization/v1"
 	v1 "k8s.io/api/core/v1"
@@ -45,6 +46,7 @@ type handler struct {
 	authenticationClient authenticationv1.TokenReviewInterface
 	authorizationClient  authorizationv1.SubjectAccessReviewInterface
 	compressState        bool
+	minifyState          bool
 }
 
 func NewHandler(
@@ -52,12 +54,14 @@ func NewHandler(
 	authenticationClient authenticationv1.TokenReviewInterface,
 	authorizationClient authorizationv1.SubjectAccessReviewInterface,
 	compressState bool,
+	minifyState bool,
 ) http.Handler {
 	return &handler{
 		coreClient:           coreClient,
 		authenticationClient: authenticationClient,
 		authorizationClient:  authorizationClient,
 		compressState:        compressState,
+		minifyState:          minifyState,
 	}
 }
 
@@ -271,7 +275,11 @@ func (h *handler) getTFStateForWriting(r io.Reader) ([]byte, error) {
 		}
 		w = gzw
 	}
-	if _, err := io.Copy(w, r); err != nil {
+	if h.minifyState {
+		if err := json.Minify(nil, w, r, nil); err != nil {
+			return nil, err
+		}
+	} else if _, err := io.Copy(w, r); err != nil {
 		return nil, err
 	}
 	if wc, ok := w.(io.Closer); ok {
