@@ -329,7 +329,6 @@ func (h *handler) handleLOCK(configMap *v1.ConfigMap, configMapClient corev1.Con
 	if err != nil {
 		log.Printf("failed to lock configmap: %v", err)
 		h.handleAPIError(err, w)
-		return
 	}
 }
 
@@ -374,7 +373,6 @@ func (h *handler) handleUNLOCK(configMap *v1.ConfigMap, configMapClient corev1.C
 	if err != nil {
 		log.Printf("failed to unlock configmap: %v", err)
 		h.handleAPIError(err, w)
-		return
 	}
 }
 
