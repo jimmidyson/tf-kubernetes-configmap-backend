@@ -107,13 +107,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	})
 	if err != nil {
 		log.Printf("failed to validate authentication token: %v", err)
-
-		if statusError, ok := err.(*errors.StatusError); ok {
-			w.WriteHeader(int(statusError.Status().Code))
-			w.Write([]byte(statusError.Error()))
-		} else {
-			w.WriteHeader(http.StatusInternalServerError)
-		}
+		h.handleAPIError(err, w)
 		return
 	}
 	if !tokenReviewResponse.Status.Authenticated {
@@ -129,8 +123,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-
-	log.Print(splitPath)
 
 	namespace := splitPath[0]
 	configMapName := splitPath[1]
@@ -149,13 +141,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	})
 	if err != nil {
 		log.Printf("failed to check authorization: %v", err)
-
-		if statusError, ok := err.(*errors.StatusError); ok {
-			w.WriteHeader(int(statusError.Status().Code))
-			w.Write([]byte(statusError.Error()))
-		} else {
-			w.WriteHeader(http.StatusInternalServerError)
-		}
+		h.handleAPIError(err, w)
 		return
 	}
 
@@ -171,12 +157,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	configMap, err := configMapClient.Get(configMapName, metav1.GetOptions{})
 	if err != nil {
 		if !errors.IsNotFound(err) {
-			if statusError, ok := err.(*errors.StatusError); ok {
-				w.WriteHeader(int(statusError.Status().Code))
-				w.Write([]byte(statusError.Error()))
-			} else {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
+			log.Printf("failed to get configmap: %v", err)
+			h.handleAPIError(err, w)
 			return
 		}
 		exists = false
@@ -184,96 +166,163 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	switch req.Method {
 	case http.MethodGet:
-		if state, ok := configMap.BinaryData["tfstate"]; ok {
-			var r io.Reader = bytes.NewReader(state)
-			if h.compressState {
-				var err error
-				r, err = gzip.NewReader(r)
-				if err != nil {
-					w.WriteHeader(http.StatusInternalServerError)
-					fmt.Fprintf(w, "failed to read compressed Terraform state: %s", err)
-					return
-				}
-			}
-			if _, err := io.Copy(w, r); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, "failed to return Terraform state: %s", err)
-				return
-			}
-			if rc, ok := r.(io.Closer); ok {
-				if err := rc.Close(); err != nil {
-					w.WriteHeader(http.StatusInternalServerError)
-					fmt.Fprintf(w, "failed to return Terraform state: %s", err)
-					return
-				}
-			}
-		}
-		return
+		h.handleGET(configMap, w)
 	case http.MethodPost:
 		if exists {
 			apiVerb = "update"
 		} else {
 			apiVerb = "create"
 		}
-		err = h.checkAccess(apiVerb, namespace, configMapName, userInfo)
-		if err != nil {
-			if statusError, ok := err.(*errors.StatusError); ok {
-				w.WriteHeader(int(statusError.Status().Code))
-				w.Write([]byte(statusError.Error()))
-			} else {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-			return
-		}
-
-		reqTFState, err := h.getTFStateForWriting(req.Body)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "failed to read request body: %s", err)
-			return
-		}
-
-		if configMap.BinaryData == nil {
-			configMap.BinaryData = make(map[string][]byte, 1)
-		}
-		configMap.BinaryData["tfstate"] = reqTFState
-
-		switch apiVerb {
-		case "update":
-			configMap, err = configMapClient.Update(configMap)
-		case "create":
-			configMap.Name = configMapName
-			configMap, err = configMapClient.Create(configMap)
-		}
-
-		if err != nil {
-			if statusError, ok := err.(*errors.StatusError); ok {
-				w.WriteHeader(int(statusError.Status().Code))
-				w.Write([]byte(statusError.Error()))
-			} else {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-			return
-		}
-	case http.MethodDelete:
-		apiVerb = "delete"
+		h.handlePOST(configMap, configMapClient, apiVerb, namespace, configMapName, userInfo, req, w)
 	case MethodLock:
 		if exists {
 			apiVerb = "update"
 		} else {
 			apiVerb = "create"
 		}
-		err = h.checkAccess(apiVerb, namespace, configMapName, userInfo)
-		if err != nil {
-			if statusError, ok := err.(*errors.StatusError); ok {
-				w.WriteHeader(int(statusError.Status().Code))
-				w.Write([]byte(statusError.Error()))
-			} else {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
+		h.handleLOCK(configMap, configMapClient, apiVerb, namespace, configMapName, userInfo, req, w)
+	case MethodUnlock:
+		if !exists {
+			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 
+		h.handleUNLOCK(configMap, configMapClient, namespace, configMapName, userInfo, req, w)
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+
+}
+
+func (h *handler) handleGET(configMap *v1.ConfigMap, w http.ResponseWriter) {
+	if state, ok := configMap.BinaryData["tfstate"]; ok {
+		var r io.Reader = bytes.NewReader(state)
+		if h.compressState {
+			var err error
+			r, err = gzip.NewReader(r)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintf(w, "failed to read compressed Terraform state: %s", err)
+				return
+			}
+		}
+		if _, err := io.Copy(w, r); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "failed to return Terraform state: %s", err)
+			return
+		}
+		if rc, ok := r.(io.Closer); ok {
+			if err := rc.Close(); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintf(w, "failed to return Terraform state: %s", err)
+				return
+			}
+		}
+	}
+}
+
+func (h *handler) handlePOST(configMap *v1.ConfigMap, configMapClient corev1.ConfigMapInterface,
+	apiVerb, namespace, configMapName string, userInfo authenticationapi.UserInfo,
+	req *http.Request, w http.ResponseWriter) {
+	err := h.checkAccess(apiVerb, namespace, configMapName, userInfo)
+	if err != nil {
+		log.Printf("failed to check access to update configmap: %v", err)
+		h.handleAPIError(err, w)
+		return
+	}
+
+	reqTFState, err := h.getTFStateForWriting(req.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "failed to read request body: %s", err)
+		return
+	}
+
+	if configMap.BinaryData == nil {
+		configMap.BinaryData = make(map[string][]byte, 1)
+	}
+	configMap.BinaryData["tfstate"] = reqTFState
+
+	switch apiVerb {
+	case "update":
+		configMap, err = configMapClient.Update(configMap)
+	case "create":
+		configMap.Name = configMapName
+		configMap, err = configMapClient.Create(configMap)
+	}
+
+	if err != nil {
+		log.Printf("failed to create/update configmap: %v", err)
+		h.handleAPIError(err, w)
+		return
+	}
+}
+
+func (h *handler) handleLOCK(configMap *v1.ConfigMap, configMapClient corev1.ConfigMapInterface,
+	apiVerb, namespace, configMapName string, userInfo authenticationapi.UserInfo,
+	req *http.Request, w http.ResponseWriter) {
+	err := h.checkAccess(apiVerb, namespace, configMapName, userInfo)
+	if err != nil {
+		log.Printf("failed to check access to update configmap: %v", err)
+		h.handleAPIError(err, w)
+		return
+	}
+
+	requestLockInfo := &lockInfo{}
+	if err := json.NewDecoder(req.Body).Decode(requestLockInfo); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "failed to read request body: %s", err)
+		return
+	}
+
+	if currentLockID, locked := configMap.Annotations[annotationKeyLockID]; locked &&
+		currentLockID != requestLockInfo.ID {
+		existingLockInfo := lockInfo{
+			ID:        configMap.Annotations[annotationKeyLockID],
+			Operation: configMap.Annotations[annotationKeyLockOperation],
+			Info:      configMap.Annotations[annotationKeyLockInfo],
+			Who:       configMap.Annotations[annotationKeyLockWho],
+		}
+		w.WriteHeader(http.StatusLocked)
+		_ = json.NewEncoder(w).Encode(existingLockInfo)
+		return
+	}
+
+	if configMap.Annotations == nil {
+		configMap.Annotations = make(map[string]string, 4)
+	}
+
+	configMap.Annotations[annotationKeyLockID] = requestLockInfo.ID
+	configMap.Annotations[annotationKeyLockOperation] = requestLockInfo.Operation
+	configMap.Annotations[annotationKeyLockInfo] = requestLockInfo.Info
+	configMap.Annotations[annotationKeyLockWho] = requestLockInfo.Who
+
+	switch apiVerb {
+	case "update":
+		configMap, err = configMapClient.Update(configMap)
+	case "create":
+		configMap.Name = configMapName
+		configMap, err = configMapClient.Create(configMap)
+	}
+
+	if err != nil {
+		log.Printf("failed to lock configmap: %v", err)
+		h.handleAPIError(err, w)
+		return
+	}
+}
+
+func (h *handler) handleUNLOCK(configMap *v1.ConfigMap, configMapClient corev1.ConfigMapInterface,
+	namespace, configMapName string, userInfo authenticationapi.UserInfo,
+	req *http.Request, w http.ResponseWriter) {
+	err := h.checkAccess("update", namespace, configMapName, userInfo)
+	if err != nil {
+		log.Printf("failed to check access to update configmap: %v", err)
+		h.handleAPIError(err, w)
+		return
+	}
+
+	if req.ContentLength > 0 {
 		requestLockInfo := &lockInfo{}
 		if err := json.NewDecoder(req.Body).Decode(requestLockInfo); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -293,93 +342,28 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			_ = json.NewEncoder(w).Encode(existingLockInfo)
 			return
 		}
-
-		if configMap.Annotations == nil {
-			configMap.Annotations = make(map[string]string, 4)
-		}
-
-		configMap.Annotations[annotationKeyLockID] = requestLockInfo.ID
-		configMap.Annotations[annotationKeyLockOperation] = requestLockInfo.Operation
-		configMap.Annotations[annotationKeyLockInfo] = requestLockInfo.Info
-		configMap.Annotations[annotationKeyLockWho] = requestLockInfo.Who
-
-		switch apiVerb {
-		case "update":
-			configMap, err = configMapClient.Update(configMap)
-		case "create":
-			configMap.Name = configMapName
-			configMap, err = configMapClient.Create(configMap)
-		}
-
-		if err != nil {
-			log.Printf("failed to create/update configmap: %v", err)
-			if statusError, ok := err.(*errors.StatusError); ok {
-				w.WriteHeader(int(statusError.Status().Code))
-				w.Write([]byte(statusError.Error()))
-			} else {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-			return
-		}
-	case MethodUnlock:
-		if !exists {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-
-		err = h.checkAccess("update", namespace, configMapName, userInfo)
-		if err != nil {
-			if statusError, ok := err.(*errors.StatusError); ok {
-				w.WriteHeader(int(statusError.Status().Code))
-				w.Write([]byte(statusError.Error()))
-			} else {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-			return
-		}
-
-		if req.ContentLength > 0 {
-			requestLockInfo := &lockInfo{}
-			if err := json.NewDecoder(req.Body).Decode(requestLockInfo); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, "failed to read request body: %s", err)
-				return
-			}
-
-			if currentLockID, locked := configMap.Annotations[annotationKeyLockID]; locked &&
-				currentLockID != requestLockInfo.ID {
-				existingLockInfo := lockInfo{
-					ID:        configMap.Annotations[annotationKeyLockID],
-					Operation: configMap.Annotations[annotationKeyLockOperation],
-					Info:      configMap.Annotations[annotationKeyLockInfo],
-					Who:       configMap.Annotations[annotationKeyLockWho],
-				}
-				w.WriteHeader(http.StatusLocked)
-				_ = json.NewEncoder(w).Encode(existingLockInfo)
-				return
-			}
-		}
-
-		delete(configMap.Annotations, annotationKeyLockID)
-		delete(configMap.Annotations, annotationKeyLockOperation)
-		delete(configMap.Annotations, annotationKeyLockInfo)
-		delete(configMap.Annotations, annotationKeyLockWho)
-
-		configMap, err = configMapClient.Update(configMap)
-		if err != nil {
-			log.Printf("failed to update configmap: %v", err)
-			if statusError, ok := err.(*errors.StatusError); ok {
-				w.WriteHeader(int(statusError.Status().Code))
-				w.Write([]byte(statusError.Error()))
-			} else {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-			return
-		}
-	default:
-		w.WriteHeader(http.StatusNotFound)
 	}
 
+	delete(configMap.Annotations, annotationKeyLockID)
+	delete(configMap.Annotations, annotationKeyLockOperation)
+	delete(configMap.Annotations, annotationKeyLockInfo)
+	delete(configMap.Annotations, annotationKeyLockWho)
+
+	configMap, err = configMapClient.Update(configMap)
+	if err != nil {
+		log.Printf("failed to unlock configmap: %v", err)
+		h.handleAPIError(err, w)
+		return
+	}
+}
+
+func (h *handler) handleAPIError(err error, w http.ResponseWriter) {
+	if statusError, ok := err.(*errors.StatusError); ok {
+		w.WriteHeader(int(statusError.Status().Code))
+		w.Write([]byte(statusError.Error()))
+	} else {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
 }
 
 func (h *handler) checkAccess(apiVerb, namespace, configMapName string, userInfo authenticationapi.UserInfo) error {
