@@ -1,4 +1,4 @@
-FROM golang:1.12.9
+FROM golang:1.14.0
 
 LABEL name=tf-kubernetes-configmap-backend-dev
 
