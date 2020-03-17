@@ -26,11 +26,6 @@ import (
 	flag "github.com/spf13/pflag"
 )
 
-var (
-	outputFilePath string
-	remoteAddress  = &url.URL{}
-)
-
 type urlValue url.URL
 
 func newURLValue(p *url.URL) *urlValue {
@@ -54,11 +49,18 @@ func (u *urlValue) Type() string {
 	return "url"
 }
 
-var _ flag.Value = newURLValue(remoteAddress)
+var _ flag.Value = newURLValue(&url.URL{})
 
 func main() {
+	var (
+		outputFilePath     string
+		remoteAddress      = &url.URL{}
+		enableStateLocking bool
+	)
+
 	flag.StringVar(&outputFilePath, "output-file", "", "Path to generated output file.")
 	flag.Var(newURLValue(remoteAddress), "http-backend-address", "The address of the Terraform backend REST endpoint.")
+	flag.BoolVar(&enableStateLocking, "enable-state-locking", false, "Enable remote state locking")
 
 	flag.Parse()
 
@@ -68,7 +70,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	generatedContents := `address = "` + remoteAddress.String() + `"
+	generatedContents := `address = "` + remoteAddress.String() + `"`
+	if enableStateLocking {
+		generatedContents += `
+lock_address   = "` + remoteAddress.String() + `"
+unlock_address = "` + remoteAddress.String() + `"`
+	}
+	generatedContents += `
 username = "terraform" # Value is unused, only password (token) is used for authentication
 password = "` + strings.TrimSpace(string(serviceAccountToken)) + `"
 skip_cert_verification = "true"
