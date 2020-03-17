@@ -75,14 +75,8 @@ func NewHandler(
 // lockInfo stores lock metadata.
 //
 // Copied and trimmed from https://github.com/hashicorp/terraform/blob/master/states/statemgr/locker.go#L110-L138
-//
-// Only Operation and Info are required to be set by the caller of Lock.
-// Most callers should use NewLockInfo to create a LockInfo value with many
-// of the fields populated with suitable default values.
 type lockInfo struct {
-	// Unique ID for the lock. NewLockInfo provides a random ID, but this may
-	// be overridden by the lock implementation. The final value if ID will be
-	// returned by the call to Lock.
+	// Unique ID for the lock.
 	ID string
 	// Terraform operation, provided by the caller.
 	Operation string
