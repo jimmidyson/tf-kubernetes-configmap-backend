@@ -231,6 +231,11 @@ func (h *handler) handlePOST(configMap *v1.ConfigMap, configMapClient corev1.Con
 		return
 	}
 
+	// If the configmap is locked, then check the request comes from the locker.
+	if !h.checkRequestIsFromLocker(configMap, w, req) {
+		return
+	}
+
 	reqTFState, err := h.getTFStateForWriting(req.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -355,6 +360,21 @@ func (h *handler) handleUNLOCK(configMap *v1.ConfigMap, configMapClient corev1.C
 		h.handleAPIError(err, w)
 		return
 	}
+}
+
+func (h *handler) checkRequestIsFromLocker(configMap *v1.ConfigMap, w http.ResponseWriter, req *http.Request) bool {
+	if configMap.Annotations[annotationKeyLockID] != req.URL.Query().Get("ID") {
+		existingLockInfo := lockInfo{
+			ID:        configMap.Annotations[annotationKeyLockID],
+			Operation: configMap.Annotations[annotationKeyLockOperation],
+			Info:      configMap.Annotations[annotationKeyLockInfo],
+			Who:       configMap.Annotations[annotationKeyLockWho],
+		}
+		w.WriteHeader(http.StatusLocked)
+		_ = json.NewEncoder(w).Encode(existingLockInfo)
+		return false
+	}
+	return true
 }
 
 func (h *handler) handleAPIError(err error, w http.ResponseWriter) {
