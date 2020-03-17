@@ -19,13 +19,14 @@ package http
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strings"
 
-	"github.com/tdewolff/minify/v2/json"
+	minifyjson "github.com/tdewolff/minify/v2/json"
 	authenticationapi "k8s.io/api/authentication/v1"
 	authorizationapi "k8s.io/api/authorization/v1"
 	v1 "k8s.io/api/core/v1"
@@ -39,6 +40,12 @@ import (
 const (
 	MethodLock   = "LOCK"
 	MethodUnlock = "UNLOCK"
+
+	annotationKeyPrefix        = "tf-kubernetes-configmap-backend.jimmidyson.github.com/"
+	annotationKeyLockID        = annotationKeyPrefix + "lock-id"
+	annotationKeyLockOperation = annotationKeyPrefix + "lock-operation"
+	annotationKeyLockInfo      = annotationKeyPrefix + "lock-info"
+	annotationKeyLockWho       = annotationKeyPrefix + "lock-who"
 )
 
 type handler struct {
@@ -63,6 +70,26 @@ func NewHandler(
 		compressState:        compressState,
 		minifyState:          minifyState,
 	}
+}
+
+// lockInfo stores lock metadata.
+//
+// Copied and trimmed from https://github.com/hashicorp/terraform/blob/master/states/statemgr/locker.go#L110-L138
+//
+// Only Operation and Info are required to be set by the caller of Lock.
+// Most callers should use NewLockInfo to create a LockInfo value with many
+// of the fields populated with suitable default values.
+type lockInfo struct {
+	// Unique ID for the lock. NewLockInfo provides a random ID, but this may
+	// be overridden by the lock implementation. The final value if ID will be
+	// returned by the call to Lock.
+	ID string
+	// Terraform operation, provided by the caller.
+	Operation string
+	// Extra information to store with the lock, provided by the caller.
+	Info string
+	// user@hostname when available
+	Who string
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -231,9 +258,124 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	case http.MethodDelete:
 		apiVerb = "delete"
 	case MethodLock:
-		w.WriteHeader(http.StatusNotImplemented)
+		if exists {
+			apiVerb = "update"
+		} else {
+			apiVerb = "create"
+		}
+		err = h.checkAccess(apiVerb, namespace, configMapName, userInfo)
+		if err != nil {
+			if statusError, ok := err.(*errors.StatusError); ok {
+				w.WriteHeader(int(statusError.Status().Code))
+				w.Write([]byte(statusError.Error()))
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+			return
+		}
+
+		requestLockInfo := &lockInfo{}
+		if err := json.NewDecoder(req.Body).Decode(requestLockInfo); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "failed to read request body: %s", err)
+			return
+		}
+
+		if currentLockID, locked := configMap.Annotations[annotationKeyLockID]; locked &&
+			currentLockID != requestLockInfo.ID {
+			existingLockInfo := lockInfo{
+				ID:        configMap.Annotations[annotationKeyLockID],
+				Operation: configMap.Annotations[annotationKeyLockOperation],
+				Info:      configMap.Annotations[annotationKeyLockInfo],
+				Who:       configMap.Annotations[annotationKeyLockWho],
+			}
+			w.WriteHeader(http.StatusLocked)
+			_ = json.NewEncoder(w).Encode(existingLockInfo)
+			return
+		}
+
+		if configMap.Annotations == nil {
+			configMap.Annotations = make(map[string]string, 4)
+		}
+
+		configMap.Annotations[annotationKeyLockID] = requestLockInfo.ID
+		configMap.Annotations[annotationKeyLockOperation] = requestLockInfo.Operation
+		configMap.Annotations[annotationKeyLockInfo] = requestLockInfo.Info
+		configMap.Annotations[annotationKeyLockWho] = requestLockInfo.Who
+
+		switch apiVerb {
+		case "update":
+			configMap, err = configMapClient.Update(configMap)
+		case "create":
+			configMap.Name = configMapName
+			configMap, err = configMapClient.Create(configMap)
+		}
+
+		if err != nil {
+			log.Printf("failed to create/update configmap: %v", err)
+			if statusError, ok := err.(*errors.StatusError); ok {
+				w.WriteHeader(int(statusError.Status().Code))
+				w.Write([]byte(statusError.Error()))
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+			return
+		}
 	case MethodUnlock:
-		w.WriteHeader(http.StatusNotImplemented)
+		if !exists {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		err = h.checkAccess("update", namespace, configMapName, userInfo)
+		if err != nil {
+			if statusError, ok := err.(*errors.StatusError); ok {
+				w.WriteHeader(int(statusError.Status().Code))
+				w.Write([]byte(statusError.Error()))
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+			return
+		}
+
+		if req.ContentLength > 0 {
+			requestLockInfo := &lockInfo{}
+			if err := json.NewDecoder(req.Body).Decode(requestLockInfo); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintf(w, "failed to read request body: %s", err)
+				return
+			}
+
+			if currentLockID, locked := configMap.Annotations[annotationKeyLockID]; locked &&
+				currentLockID != requestLockInfo.ID {
+				existingLockInfo := lockInfo{
+					ID:        configMap.Annotations[annotationKeyLockID],
+					Operation: configMap.Annotations[annotationKeyLockOperation],
+					Info:      configMap.Annotations[annotationKeyLockInfo],
+					Who:       configMap.Annotations[annotationKeyLockWho],
+				}
+				w.WriteHeader(http.StatusLocked)
+				_ = json.NewEncoder(w).Encode(existingLockInfo)
+				return
+			}
+		}
+
+		delete(configMap.Annotations, annotationKeyLockID)
+		delete(configMap.Annotations, annotationKeyLockOperation)
+		delete(configMap.Annotations, annotationKeyLockInfo)
+		delete(configMap.Annotations, annotationKeyLockWho)
+
+		configMap, err = configMapClient.Update(configMap)
+		if err != nil {
+			log.Printf("failed to update configmap: %v", err)
+			if statusError, ok := err.(*errors.StatusError); ok {
+				w.WriteHeader(int(statusError.Status().Code))
+				w.Write([]byte(statusError.Error()))
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+			return
+		}
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -276,7 +418,7 @@ func (h *handler) getTFStateForWriting(r io.Reader) ([]byte, error) {
 		w = gzw
 	}
 	if h.minifyState {
-		if err := json.Minify(nil, w, r, nil); err != nil {
+		if err := minifyjson.Minify(nil, w, r, nil); err != nil {
 			return nil, err
 		}
 	} else if _, err := io.Copy(w, r); err != nil {
