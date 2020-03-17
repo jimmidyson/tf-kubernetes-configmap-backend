@@ -168,6 +168,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			apiVerb = "create"
 		}
 		h.handlePOST(configMap, configMapClient, apiVerb, namespace, configMapName, userInfo, req, w)
+	case http.MethodDelete:
+		h.handleDELETE(configMap, configMapClient, namespace, configMapName, userInfo, req, w)
 	case MethodLock:
 		if exists {
 			apiVerb = "update"
@@ -253,7 +255,27 @@ func (h *handler) handlePOST(configMap *v1.ConfigMap, configMapClient corev1.Con
 	if err != nil {
 		log.Printf("failed to create/update configmap: %v", err)
 		h.handleAPIError(err, w)
+	}
+}
+
+func (h *handler) handleDELETE(configMap *v1.ConfigMap, configMapClient corev1.ConfigMapInterface,
+	namespace, configMapName string, userInfo authenticationapi.UserInfo,
+	req *http.Request, w http.ResponseWriter) {
+	err := h.checkAccess("delete", namespace, configMapName, userInfo)
+	if err != nil {
+		log.Printf("failed to check access to delete configmap: %v", err)
+		h.handleAPIError(err, w)
 		return
+	}
+
+	// If the configmap is locked, then check the request comes from the locker.
+	if !h.checkRequestIsFromLocker(configMap, w, req) {
+		return
+	}
+
+	if err = configMapClient.Delete(configMapName, &metav1.DeleteOptions{}); err != nil && errors.IsNotFound(err) {
+		log.Printf("failed to delete configmap: %v", err)
+		h.handleAPIError(err, w)
 	}
 }
 
